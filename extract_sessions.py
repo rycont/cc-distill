@@ -12,7 +12,7 @@ import sys, json, os, time
 from pathlib import Path
 
 NUM = int(sys.argv[1]) if len(sys.argv) > 1 else 20
-DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 7
+DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 CLAUDE_DIR = Path.home() / ".claude"
 OUT = Path("/tmp/session_analysis.json")
 CUTOFF = time.time() - DAYS * 86400

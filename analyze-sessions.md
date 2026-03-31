@@ -1,8 +1,6 @@
 # Claude Code Session Analyzer
 
-Analyze recent long Claude Code sessions to:
-1. Find **repeated instruction patterns** and suggest skill candidates
-2. Find **inefficient exploration patterns** and suggest AGENTS.md guidelines
+Analyze recent Claude Code sessions to find repeated patterns, then distill them into the right improvement — either a **skill** or an **AGENTS.md** guideline.
 
 **Respond in the user's primary language** (detect from their session messages).
 
@@ -11,11 +9,11 @@ Analyze recent long Claude Code sessions to:
 ## Step 1: Extract session data
 
 Run `extract_sessions.py` from this repository.
-Args: `python3 extract_sessions.py [num_sessions] [days]` (default: top 20, last 7 days)
+Args: `python3 extract_sessions.py [num_sessions] [days]` (default: top 20, last 30 days)
 
 ```bash
-python3 extract_sessions.py          # last 7 days, top 20
-python3 extract_sessions.py 20 30   # last 30 days, top 20
+python3 extract_sessions.py           # last 30 days, top 20
+python3 extract_sessions.py 30 60    # last 60 days, top 30
 ```
 
 Output: `/tmp/session_analysis.json`
@@ -25,6 +23,9 @@ Output: `/tmp/session_analysis.json`
 ## Step 1.5: Collect existing skills and AGENTS.md
 
 Run `collect_existing.py` to gather the user's existing skills and AGENTS.md files.
+These serve two purposes:
+1. Avoid duplicate suggestions
+2. **Act as reference examples** for how this user structures skills vs AGENTS.md
 
 ```bash
 python3 collect_existing.py
@@ -37,13 +38,14 @@ Output: `/tmp/existing_context.json`
 ## Step 2: Read data
 
 Read `/tmp/existing_context.json` directly using the Read tool.
+**Study the existing skills and AGENTS.md carefully** — understand what kinds of things this user puts in each. This informs your classification decisions in Step 3.
 
 For `/tmp/session_analysis.json`, check the file size first (`wc -c`).
 - **Under 200KB**: Read it directly.
 - **200KB or larger**: Do NOT compact or truncate the data. Instead, spawn subagents (via the Agent tool) to read and summarize portions of the file in parallel. For example:
-  - Subagent 1: Read sessions 1-3, summarize user message patterns and tool usage
-  - Subagent 2: Read sessions 4-6, same task
-  - Subagent 3: Read sessions 7-10, same task
+  - Subagent 1: Read sessions 1-7, summarize user message patterns and tool usage
+  - Subagent 2: Read sessions 8-14, same task
+  - Subagent 3: Read sessions 15-20, same task
   
   Each subagent should read its assigned portion of `/tmp/session_analysis.json` using the Read tool (with offset/limit or by parsing the JSON), then return a structured summary containing:
   - Recurring user message themes and exact quotes
@@ -54,61 +56,68 @@ For `/tmp/session_analysis.json`, check the file size first (`wc -c`).
 
 ---
 
-## Step 3: Analysis
+## Step 3: Find patterns and classify
 
-Analyze the extracted data along two axes.
+### 3a: Find all repeated patterns
 
-### Analysis A: Repeated instruction patterns → Skill candidates
+Scan across sessions for any kind of repetition:
 
-**Cross-analyze `user_messages` across sessions** looking for:
+- **User message patterns**: similar instructions, recurring prefixes/suffixes, repeated requests
+- **Tool usage patterns**: repeated tool sequences (Grep→Read→Grep→Read loops), subagent wandering, always searching for the same entry points
+- **Workflow patterns**: multi-step processes the user triggers manually each time
+- **Context-setting patterns**: boilerplate the user pastes to set up Claude's behavior
 
-- Similar instructions/requests appearing across multiple sessions
-- Recurring prefixes/suffixes (text acting as a system prompt)
-- Repeatedly requested workflows (e.g., "run tests and commit")
-- Manual instructions for specific tool combinations
+### 3b: Classify each pattern → Skill or AGENTS.md
 
-**Cross-reference with existing skills** (`/tmp/existing_context.json` → `skills`):
-- If a pattern matches an existing skill → **suggest modifications/improvements** to the existing skill instead of a new one
-- If an existing skill partially covers the pattern → suggest what to add specifically
-- Only suggest new skills for patterns not covered by any existing skill
+For each pattern found, decide whether it should become a **skill** or an **AGENTS.md guideline**. Use the user's existing skills and AGENTS.md (from Step 2) as reference examples for how they draw this line.
 
-For each pattern:
-1. Pattern name
-2. Frequency (N sessions)
-3. Evidence (actual message excerpts)
-4. **Relationship to existing skills**: `New` / `Enhance /skill-name` / `Already covered by /skill-name (skip)`
-5. Skill draft or diff to existing skill
+General principles:
 
-### Analysis B: Inefficient exploration patterns → AGENTS.md guidelines
+| Signal | → AGENTS.md | → Skill |
+|---|---|---|
+| Scope | Project-specific context | Cross-project or workflow-level |
+| Trigger | Claude should just *know* this | User explicitly invokes it |
+| Nature | Short directives, facts, file maps | Multi-step procedures, structured output |
+| Examples | "Always read config.ts first in this project", "The DB schema is in /db/schema.prisma", "Don't mock the database in tests" | "/deploy", "/review-pr", "run tests → fix → commit cycle" |
+| Repetition type | Same short instruction repeated across sessions in one project | Same multi-step workflow repeated across projects |
+| Tool patterns | Agent always searches for the same files → tell it where to look | Grep→Read→Edit→Test loop repeated → automate the workflow |
 
-**Analyze tool usage patterns** (`main_repeated_patterns`, `subagent_*`) looking for:
+**Edge cases — use judgment:**
+- A pattern that repeats in only one project → likely AGENTS.md
+- A pattern that repeats across many projects → likely a skill
+- A short instruction that the user always gives at session start → could be either; check if it's project-specific or universal
+- Subagent inefficiency in a specific codebase → AGENTS.md (give the agent a map)
+- Subagent inefficiency that's structural (always too many agents, wrong tool choices) → skill or general guidance
 
-- Repetitive search loops like Grep → Read → Grep → Read
-- Common wandering patterns across subagents (e.g., multiple agents searching for the same files)
-- Excessive or insufficient Agent tool usage
-- Patterns where sessions always search for the same entry points in a project
-- Significant divergence between main session and subagent tool usage ratios (inefficiency signal)
+### 3c: Cross-reference with existing assets
 
-**Cross-reference with existing AGENTS.md** (`/tmp/existing_context.json` → `agents_md`):
-- Projects that already have AGENTS.md → compare and **only suggest missing guidelines**
-- If existing guidelines already cover the issue → skip, or analyze why they aren't working
-- Projects without AGENTS.md → suggest creating one
+Before finalizing suggestions:
 
-For each pattern:
-1. What inefficiency exists
-2. Which project/context it occurs in
-3. **Relationship to existing AGENTS.md**: `Create new` / `Augment existing (path)` / `Already covered (skip)`
-4. Guideline draft or diff to existing file
+**For patterns classified as skills** — check `/tmp/existing_context.json` → `skills`:
+- Already covered by existing skill → skip, or note if the existing skill needs updates
+- Partially covered → suggest enhancing the existing skill
+- Not covered → suggest a new skill
+
+**For patterns classified as AGENTS.md** — check `/tmp/existing_context.json` → `agents_md`:
+- Already covered in existing AGENTS.md → skip, or analyze why it's not working
+- Partially covered → suggest additions
+- No AGENTS.md exists for that project → suggest creating one
 
 ---
 
 ## Step 4: Present results
 
-Show the analysis to the user and ask:
+For each pattern, present:
+1. **Pattern name**
+2. **Evidence**: actual message excerpts or tool sequences (with session IDs)
+3. **Classification**: Skill or AGENTS.md, with reasoning
+4. **Relationship to existing assets**: `New` / `Enhance existing` / `Already covered (skip)`
+5. **Draft**: skill definition or AGENTS.md guideline, ready to use. Or a diff to an existing file.
 
-1. Which suggested skills they want to create or modify
-2. Whether to apply AGENTS.md guidelines (create new or augment existing)
-3. Whether to adjust the analysis scope (more sessions, specific project only, etc.)
+Then ask the user:
+1. Which suggestions they want to apply
+2. Whether any classifications should be flipped (skill ↔ AGENTS.md)
+3. Whether to adjust scope (more sessions, specific project, etc.)
 
 **Important:**
 - Do not fabricate patterns without evidence from the data
