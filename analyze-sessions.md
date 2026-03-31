@@ -15,7 +15,7 @@ python3 extract_sessions.py           # → /tmp/session_analysis.json
 python3 collect_existing.py           # → /tmp/existing_context.json
 ```
 
-`extract_sessions.py` args: `[num_sessions] [days]` (default: 20, 30 days).
+`extract_sessions.py` args: `[num_sessions] [days]` (default: 20, 7 days).
 
 ---
 
