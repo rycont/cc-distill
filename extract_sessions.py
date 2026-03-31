@@ -61,6 +61,7 @@ def find_subagents(session_path):
 def parse_jsonl(fpath, extract_struggles=True):
     """Parse JSONL → rich session data including struggle signals."""
     user_msgs = []
+    assistant_text_lens = []  # length of each assistant text reply
     tool_details = []  # [{name, input_summary, timestamp}, ...]
     tool_counts = {}
     cwd = None
@@ -117,6 +118,7 @@ def parse_jsonl(fpath, extract_struggles=True):
 
             # ── New format: type=assistant ──
             elif dtype == "assistant" and "message" in d:
+                asst_text_len = 0
                 for b in (d["message"].get("content") or []):
                     if isinstance(b, dict) and b.get("type") == "tool_use":
                         tn = b.get("name", "?")
@@ -131,6 +133,10 @@ def parse_jsonl(fpath, extract_struggles=True):
 
                         if extract_struggles:
                             _track_tool_for_struggles(tn, inp, ts, bash_commands, edited_files, read_files)
+                    elif isinstance(b, dict) and b.get("type") == "text":
+                        asst_text_len += len(b.get("text", ""))
+                if asst_text_len > 0:
+                    assistant_text_lens.append(asst_text_len)
 
             # ── Legacy format: type=user (no message wrapper) ──
             elif dtype == "user" and "message" not in d:
@@ -164,7 +170,7 @@ def parse_jsonl(fpath, extract_struggles=True):
                     })
 
     # Build struggle analysis
-    struggles = _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs) if extract_struggles else {}
+    struggles = _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs, timestamps, assistant_text_lens) if extract_struggles else {}
 
     return {
         "user_messages": user_msgs,
@@ -243,9 +249,32 @@ def _track_tool_for_struggles(tool_name, inp, ts, bash_commands, edited_files, r
             read_files.append(fp)
 
 
-def _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs):
+def _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs, timestamps, assistant_text_lens):
     """Detect struggle patterns from collected signals."""
     struggles = {}
+
+    # 0. Session duration
+    if len(timestamps) >= 2:
+        try:
+            from datetime import datetime
+            ts_sorted = sorted(timestamps)
+            t0 = datetime.fromisoformat(ts_sorted[0].replace("Z", "+00:00"))
+            t1 = datetime.fromisoformat(ts_sorted[-1].replace("Z", "+00:00"))
+            duration_min = round((t1 - t0).total_seconds() / 60)
+            struggles["duration_minutes"] = duration_min
+        except:
+            pass
+
+    # 0b. Verbosity — assistant talks too much relative to user
+    if assistant_text_lens and user_msgs:
+        avg_asst = sum(assistant_text_lens) / len(assistant_text_lens)
+        avg_user = sum(len(m) for m in user_msgs) / len(user_msgs)
+        if avg_user > 0 and avg_asst / avg_user > 5:
+            struggles["verbose_assistant"] = {
+                "avg_assistant_chars": round(avg_asst),
+                "avg_user_chars": round(avg_user),
+                "ratio": round(avg_asst / avg_user, 1),
+            }
 
     # 1. Repeated errors — same error appearing multiple times
     if errors:
@@ -381,6 +410,9 @@ def struggle_score(s):
     score += sum(f["edit_count"] for f in st.get("edit_churn", {}).get("files", [])) * 2
     score += sum(c["attempts"] for c in st.get("bash_retries", {}).get("commands", [])) * 2
     score += st.get("thrashing", {}).get("ratio", 0)
+    score += min(st.get("duration_minutes", 0) / 10, 10)  # long sessions get mild boost
+    if "verbose_assistant" in st:
+        score += st["verbose_assistant"]["ratio"]
     # Include subagent struggles
     for sa in s.get("subagent_details", []):
         sa_st = sa.get("struggles", {})

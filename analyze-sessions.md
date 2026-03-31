@@ -1,133 +1,93 @@
-# Claude Code Session Analyzer
+# cc-distill
 
-Analyze recent Claude Code sessions to find repeated patterns, then distill them into the right improvement — either a **skill** or an **AGENTS.md** guideline.
+Distill inefficiencies from Claude Code sessions into actionable improvements.
 
 **Respond in the user's primary language** (detect from their session messages).
 
 ---
 
-## Step 1: Extract session data
+## Phase 1: Extract (mechanical)
 
-Run `extract_sessions.py` from this repository.
-Args: `python3 extract_sessions.py [num_sessions] [days]` (default: top 20, last 30 days)
-
-```bash
-python3 extract_sessions.py           # last 30 days, top 20
-python3 extract_sessions.py 30 60    # last 60 days, top 30
-```
-
-Output: `/tmp/session_analysis.json`
-
----
-
-## Step 1.5: Collect existing skills and AGENTS.md
-
-Run `collect_existing.py` to gather the user's existing skills and AGENTS.md files.
-These serve two purposes:
-1. Avoid duplicate suggestions
-2. **Act as reference examples** for how this user structures skills vs AGENTS.md
+Run both scripts from this repository:
 
 ```bash
-python3 collect_existing.py
+python3 extract_sessions.py           # → /tmp/session_analysis.json
+python3 collect_existing.py           # → /tmp/existing_context.json
 ```
 
-Output: `/tmp/existing_context.json`
+`extract_sessions.py` args: `[num_sessions] [days]` (default: 20, 30 days).
+Sessions are pre-sorted by struggle severity — worst first.
 
 ---
 
-## Step 2: Read data
+## Phase 2: Evaluate (batch subagents)
 
-Read `/tmp/existing_context.json` directly using the Read tool.
-**Study the existing skills and AGENTS.md carefully** — understand what kinds of things this user puts in each. This informs your classification decisions in Step 3.
+Read `/tmp/existing_context.json` first — study existing skills and AGENTS.md to understand what the user already has.
 
-For `/tmp/session_analysis.json`, check the file size first (`wc -c`).
-- **Under 200KB**: Read it directly.
-- **200KB or larger**: Do NOT compact or truncate the data. Instead, spawn subagents (via the Agent tool) to read and summarize portions of the file in parallel. For example:
-  - Subagent 1: Read sessions 1-7, summarize user message patterns and tool usage
-  - Subagent 2: Read sessions 8-14, same task
-  - Subagent 3: Read sessions 15-20, same task
-  
-  Each subagent should read its assigned portion of `/tmp/session_analysis.json` using the Read tool (with offset/limit or by parsing the JSON), then return a structured summary containing:
-  - Recurring user message themes and exact quotes
-  - Tool usage counts and repeated tool patterns
-  - Subagent tool patterns
-  
-  Collect all subagent summaries before proceeding to Step 3.
+Then check the size of `/tmp/session_analysis.json` (`wc -c`).
 
----
+Spawn **one subagent per session** (or per batch of 2-3 small sessions). Each subagent:
 
-## Step 3: Find patterns and classify
+1. Reads its assigned session(s) from `/tmp/session_analysis.json`
+2. Answers **one question**: "What went wrong here, if anything?"
+3. Returns a **single-line verdict** in this format:
 
-### 3a: Find all repeated patterns
+```
+OK | no issues
+INEFFICIENCY | <what happened> | <one-sentence fix>
+```
 
-Scan across sessions for any kind of repetition:
+Examples:
+```
+INEFFICIENCY | Docker compose failed 8 times — kept retrying same port config | AGENTS.md: "In horang-backend, run `docker compose config` to validate before `up`"
+INEFFICIENCY | User pasted the same analysis-mode prompt in 5 sessions | Skill: create /analyze skill with this prompt baked in
+INEFFICIENCY | Subagents all searched for schema.prisma independently | AGENTS.md: "Schema is at /db/schema.prisma, read it first"
+OK | long session but steady progress, no repeated failures
+```
 
-- **User message patterns**: similar instructions, recurring prefixes/suffixes, repeated requests
-- **Tool usage patterns**: repeated tool sequences (Grep→Read→Grep→Read loops), subagent wandering, always searching for the same entry points
-- **Workflow patterns**: multi-step processes the user triggers manually each time
-- **Context-setting patterns**: boilerplate the user pastes to set up Claude's behavior
-- **Struggle patterns** (in `struggles` field): sessions where Claude got stuck — these are high-value improvement targets. Look for:
-  - `repeated_errors`: same error appearing multiple times → Claude retried without changing approach
-  - `edit_churn`: same file edited 3+ times → couldn't get it right, kept patching
-  - `bash_retries`: same command retried 3+ times → environment issue Claude couldn't solve
-  - `thrashing`: high tool-call-to-user-message ratio → Claude spinning without progress
-  - `repeated_reads`: same file read 4+ times → lost context or couldn't find what it needed
-  
-  **Struggles are the most actionable patterns.** A struggle that repeats across sessions means the user keeps hitting the same wall. Prioritize these over minor style repetitions.
-
-### 3b: Classify each pattern → Skill or AGENTS.md
-
-For each pattern found, decide whether it should become a **skill** or an **AGENTS.md guideline**. Use the user's existing skills and AGENTS.md (from Step 2) as reference examples for how they draw this line.
-
-General principles:
-
-| Signal | → AGENTS.md | → Skill |
-|---|---|---|
-| Scope | Project-specific context | Cross-project or workflow-level |
-| Trigger | Claude should just *know* this | User explicitly invokes it |
-| Nature | Short directives, facts, file maps | Multi-step procedures, structured output |
-| Examples | "Always read config.ts first in this project", "The DB schema is in /db/schema.prisma", "Don't mock the database in tests" | "/deploy", "/review-pr", "run tests → fix → commit cycle" |
-| Repetition type | Same short instruction repeated across sessions in one project | Same multi-step workflow repeated across projects |
-| Tool patterns | Agent always searches for the same files → tell it where to look | Grep→Read→Edit→Test loop repeated → automate the workflow |
-
-**Edge cases — use judgment:**
-- A pattern that repeats in only one project → likely AGENTS.md
-- A pattern that repeats across many projects → likely a skill
-- A short instruction that the user always gives at session start → could be either; check if it's project-specific or universal
-- Subagent inefficiency in a specific codebase → AGENTS.md (give the agent a map)
-- Subagent inefficiency that's structural (always too many agents, wrong tool choices) → skill or general guidance
-
-### 3c: Cross-reference with existing assets
-
-Before finalizing suggestions:
-
-**For patterns classified as skills** — check `/tmp/existing_context.json` → `skills`:
-- Already covered by existing skill → skip, or note if the existing skill needs updates
-- Partially covered → suggest enhancing the existing skill
-- Not covered → suggest a new skill
-
-**For patterns classified as AGENTS.md** — check `/tmp/existing_context.json` → `agents_md`:
-- Already covered in existing AGENTS.md → skip, or analyze why it's not working
-- Partially covered → suggest additions
-- No AGENTS.md exists for that project → suggest creating one
+The subagent should look at:
+- `struggles` field (pre-computed: errors, retries, churn, thrashing, verbosity, duration)
+- `user_messages` (repeated instructions across sessions)
+- `subagent_details` (wandering, duplicate work)
+- `main_tool_details` (what actually happened step by step)
 
 ---
 
-## Step 4: Present results
+## Phase 3: Synthesize (orchestrator)
 
-For each pattern, present:
-1. **Pattern name**
-2. **Evidence**: actual message excerpts or tool sequences (with session IDs)
-3. **Classification**: Skill or AGENTS.md, with reasoning
-4. **Relationship to existing assets**: `New` / `Enhance existing` / `Already covered (skip)`
-5. **Draft**: skill definition or AGENTS.md guideline, ready to use. Or a diff to an existing file.
+Collect all subagent verdicts. Filter out `OK` sessions.
 
-Then ask the user:
-1. Which suggestions they want to apply
-2. Whether any classifications should be flipped (skill ↔ AGENTS.md)
-3. Whether to adjust scope (more sessions, specific project, etc.)
+For each `INEFFICIENCY`:
+1. **Deduplicate** — group similar issues across sessions
+2. **Classify** — Skill or AGENTS.md? Use the user's existing assets as reference:
+   - Project-specific, short directive → AGENTS.md
+   - Cross-project workflow, multi-step → Skill
+3. **Cross-reference** — already covered by existing skill/AGENTS.md? → skip or suggest enhancement
+4. **Merge** — if multiple sessions show the same issue, combine into one suggestion
 
-**Important:**
-- Do not fabricate patterns without evidence from the data
-- Be cautious about sensitive information (passwords, API keys, etc.) in user messages — do not output them
-- Respond in the user's primary language (detect from their session messages)
+---
+
+## Output format
+
+Present the final result as a **flat bullet list**. One line per issue. No headers, no sections, no explanations beyond the bullet.
+
+Format:
+```
+- [Skill: /name] or [AGENTS.md: project] — what to do, in one sentence
+```
+
+Examples:
+```
+- [Skill: /analyze] — Create skill with the analysis-mode prompt that's pasted at session start in 5/20 sessions
+- [AGENTS.md: horang-backend] — Add "DB schema is at prisma/schema.prisma" — agents search for it in 3 sessions
+- [AGENTS.md: horang-frontend-v2] — Add "run `pnpm tsc --noEmit` before committing" — type errors caught late in 4 sessions
+- [Skill: /review → enhance] — Add SQL injection check — user manually requests it in 3 sessions
+- [AGENTS.md: dalbit-yaksok] — Add "parser rules are in core/prepare/parse/, start there" — subagents wander every time
+```
+
+After the list, ask: "Which of these should I apply?"
+
+**Rules:**
+- No fabricated patterns — every bullet must cite session evidence
+- No sensitive data in output (secrets are pre-masked, but double-check)
+- If nothing meaningful is found, say so — don't force suggestions
