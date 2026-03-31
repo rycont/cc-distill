@@ -6,7 +6,7 @@ Distill inefficiencies from Claude Code sessions into actionable improvements.
 
 ---
 
-## Phase 1: Extract (mechanical)
+## Phase 1: Extract
 
 Run both scripts from this repository:
 
@@ -16,78 +16,60 @@ python3 collect_existing.py           # → /tmp/existing_context.json
 ```
 
 `extract_sessions.py` args: `[num_sessions] [days]` (default: 20, 30 days).
-Sessions are pre-sorted by struggle severity — worst first.
 
 ---
 
-## Phase 2: Evaluate (batch subagents)
+## Phase 2: Analyze
 
-Read `/tmp/existing_context.json` first — study existing skills and AGENTS.md to understand what the user already has.
+Read both files. The session data is ~800KB and fits in context.
 
-Then check the size of `/tmp/session_analysis.json` (`wc -c`).
+Read `/tmp/existing_context.json` first — study existing skills and AGENTS.md. Understand what kinds of things this user puts in each. This is your reference for classification.
 
-Spawn **one subagent per session** (or per batch of 2-3 small sessions). Each subagent:
+Then read `/tmp/session_analysis.json` in full. Look across ALL sessions simultaneously for:
 
-1. Reads its assigned session(s) from `/tmp/session_analysis.json`
-2. Answers **one question**: "What went wrong here, if anything?"
-3. Returns a **single-line verdict** in this format:
+### Cross-session patterns (most valuable)
+- **Repeated user instructions**: same or similar text appearing across multiple sessions (e.g., always pasting a "council mode" prompt, always giving the same setup instructions)
+- **Repeated struggles**: same type of failure happening in different sessions (e.g., Docker compose failing in worktrees every time, same build error across projects)
+- **Repeated workflow triggers**: user manually orchestrating the same multi-step process each time
+- **Repeated corrections**: user interrupting or correcting Claude the same way across sessions (check `Request interrupted` messages — what was Claude doing wrong?)
+- **Skill underuse**: existing skills that should have been invoked but weren't (check `/command-name` messages vs available skills)
 
-```
-OK | no issues
-INEFFICIENCY | <what happened> | <one-sentence fix>
-```
+### Per-session signals
+- **llm/human ratio** extremes: very high = Claude talked too much; very low with many tool calls = Claude worked silently but maybe inefficiently
+- **Duration vs turns**: long duration with few user turns = Claude spinning alone
+- **Subagent patterns**: what subagents were spawned for (check `subagents[].prompt`), whether similar prompts repeat
 
-Examples:
-```
-INEFFICIENCY | Docker compose failed 8 times — kept retrying same port config | AGENTS.md: "In horang-backend, run `docker compose config` to validate before `up`"
-INEFFICIENCY | User pasted the same analysis-mode prompt in 5 sessions | Skill: create /analyze skill with this prompt baked in
-INEFFICIENCY | Subagents all searched for schema.prisma independently | AGENTS.md: "Schema is at /db/schema.prisma, read it first"
-OK | long session but steady progress, no repeated failures
-```
+### Classify each finding → Skill or AGENTS.md
 
-The subagent should look at:
-- `struggles` field (pre-computed: errors, retries, churn, thrashing, verbosity, duration)
-- `user_messages` (repeated instructions across sessions)
-- `subagent_details` (wandering, duplicate work)
-- `main_tool_details` (what actually happened step by step)
+Use the user's existing skills and AGENTS.md as reference examples.
 
----
+| → AGENTS.md | → Skill |
+|---|---|
+| Project-specific context | Cross-project workflow |
+| Claude should just *know* this without being told | User explicitly invokes it |
+| Short directives, file maps, facts | Multi-step procedures |
+| Same correction repeated in one project | Same workflow repeated across projects |
 
-## Phase 3: Synthesize (orchestrator)
+### Cross-reference with existing assets
 
-Collect all subagent verdicts. Filter out `OK` sessions.
-
-For each `INEFFICIENCY`:
-1. **Deduplicate** — group similar issues across sessions
-2. **Classify** — Skill or AGENTS.md? Use the user's existing assets as reference:
-   - Project-specific, short directive → AGENTS.md
-   - Cross-project workflow, multi-step → Skill
-3. **Cross-reference** — already covered by existing skill/AGENTS.md? → skip or suggest enhancement
-4. **Merge** — if multiple sessions show the same issue, combine into one suggestion
+- Already covered by existing skill/AGENTS.md → skip, or note it's not working
+- Partially covered → suggest enhancement
+- Not covered → suggest new
 
 ---
 
-## Output format
+## Output
 
-Present the final result as a **flat bullet list**. One line per issue. No headers, no sections, no explanations beyond the bullet.
+**Flat bullet list. One line per issue. No headers, no sections.**
 
 Format:
 ```
-- [Skill: /name] or [AGENTS.md: project] — what to do, in one sentence
-```
-
-Examples:
-```
-- [Skill: /analyze] — Create skill with the analysis-mode prompt that's pasted at session start in 5/20 sessions
-- [AGENTS.md: horang-backend] — Add "DB schema is at prisma/schema.prisma" — agents search for it in 3 sessions
-- [AGENTS.md: horang-frontend-v2] — Add "run `pnpm tsc --noEmit` before committing" — type errors caught late in 4 sessions
-- [Skill: /review → enhance] — Add SQL injection check — user manually requests it in 3 sessions
-- [AGENTS.md: dalbit-yaksok] — Add "parser rules are in core/prepare/parse/, start there" — subagents wander every time
+- [Skill: /name] or [AGENTS.md: project] — what to do, in one sentence (evidence: sessions X, Y, Z)
 ```
 
 After the list, ask: "Which of these should I apply?"
 
 **Rules:**
-- No fabricated patterns — every bullet must cite session evidence
+- Every bullet must cite specific session IDs as evidence
 - No sensitive data in output (secrets are pre-masked, but double-check)
-- If nothing meaningful is found, say so — don't force suggestions
+- If nothing meaningful is found, say so
