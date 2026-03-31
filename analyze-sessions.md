@@ -21,7 +21,7 @@ python3 collect_existing.py           # → /tmp/existing_context.json
 
 ## Phase 2: Analyze
 
-Read both files. The session data is ~800KB and fits in context.
+Read both files yourself. Do NOT spawn subagents — read and analyze everything in this single conversation. The data is ~1.4MB and fits in context.
 
 Read `/tmp/existing_context.json` first — study existing skills and AGENTS.md. Understand what kinds of things this user puts in each. This is your reference for classification.
 
