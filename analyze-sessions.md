@@ -19,42 +19,48 @@ python3 collect_existing.py           # → /tmp/existing_context.json
 
 ---
 
-## Phase 2: Analyze
+## Phase 2: Analyze (two tracks in parallel)
 
-Read both files yourself. Do NOT spawn subagents — read and analyze everything in this single conversation. The data is ~1.4MB and fits in context.
+First, read `/tmp/existing_context.json` — study existing skills and AGENTS.md as classification reference.
 
-Read `/tmp/existing_context.json` first — study existing skills and AGENTS.md. Understand what kinds of things this user puts in each. This is your reference for classification.
+Then run **both tracks simultaneously**:
 
-Then read `/tmp/session_analysis.json` in full. Look across ALL sessions simultaneously for:
+### Track A: Cross-session patterns (you, directly)
 
-### Cross-session patterns (most valuable)
-- **Repeated user instructions**: same or similar text appearing across multiple sessions (e.g., always pasting a "council mode" prompt, always giving the same setup instructions)
-- **Repeated struggles**: same type of failure happening in different sessions (e.g., Docker compose failing in worktrees every time, same build error across projects)
-- **Repeated workflow triggers**: user manually orchestrating the same multi-step process each time
-- **Repeated corrections**: user interrupting or correcting Claude the same way across sessions (check `Request interrupted` messages — what was Claude doing wrong?)
-- **Skill underuse**: existing skills that should have been invoked but weren't (check `/command-name` messages vs available skills)
+Read `/tmp/session_analysis.json` in full. Do NOT spawn subagents for this — you must see all sessions at once. Look for:
 
-### Per-session signals
-- **llm/human ratio** extremes: very high = Claude talked too much; very low with many tool calls = Claude worked silently but maybe inefficiently
-- **Duration vs turns**: long duration with few user turns = Claude spinning alone
-- **Subagent patterns**: what subagents were spawned for (check `subagents[].prompt`), whether similar prompts repeat
+- **Repeated user instructions**: same or similar text across multiple sessions
+- **Repeated struggles**: same type of failure in different sessions
+- **Repeated workflow triggers**: user manually orchestrating the same multi-step process
+- **Repeated corrections**: user interrupting or correcting Claude the same way (check `Request interrupted` and what preceded it)
+- **Skill underuse**: existing skills that should have been invoked but weren't
 
-### Classify each finding → Skill or AGENTS.md
+### Track B: Per-session deep dive (subagents, in background)
 
-Use the user's existing skills and AGENTS.md as reference examples.
+Spawn one subagent per session (or batch 2-3 small ones). Run them all in the background while you work on Track A. Each subagent reads its assigned session from `/tmp/session_analysis.json` and answers:
 
-| → AGENTS.md | → Skill |
-|---|---|
-| Project-specific context | Cross-project workflow |
-| Claude should just *know* this without being told | User explicitly invokes it |
-| Short directives, file maps, facts | Multi-step procedures |
-| Same correction repeated in one project | Same workflow repeated across projects |
+> "What was the single biggest waste of time in this session? Look at bash commands that failed repeatedly, files edited over and over, long stretches of tool calls without progress. If nothing significant, say OK."
 
-### Cross-reference with existing assets
+Each subagent returns one line:
+```
+OK
+```
+or:
+```
+WASTE | <what happened, specifically> | <how long / how many retries>
+```
 
-- Already covered by existing skill/AGENTS.md → skip, or note it's not working
-- Partially covered → suggest enhancement
-- Not covered → suggest new
+---
+
+## Phase 3: Synthesize
+
+Collect Track A findings and Track B subagent results. Merge them:
+
+1. **Deduplicate** — Track B might find individual instances of what Track A found as a pattern. Merge these (the cross-session pattern is more valuable).
+2. **Classify** — Skill or AGENTS.md? Use existing assets as reference:
+   - Project-specific, short directive → AGENTS.md
+   - Cross-project workflow, multi-step → Skill
+3. **Cross-reference** — skip what's already covered by existing skills/AGENTS.md, or note if existing guidance isn't working.
 
 ---
 
@@ -71,5 +77,5 @@ After the list, ask: "Which of these should I apply?"
 
 **Rules:**
 - Every bullet must cite specific session IDs as evidence
-- No sensitive data in output (secrets are pre-masked, but double-check)
+- No sensitive data in output
 - If nothing meaningful is found, say so
