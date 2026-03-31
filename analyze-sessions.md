@@ -36,12 +36,21 @@ Output: `/tmp/existing_context.json`
 
 ## Step 2: Read data
 
-Read both `/tmp/session_analysis.json` and `/tmp/existing_context.json` using the Read tool.
-If the session file is too large (200KB+), run the compaction script first:
+Read `/tmp/existing_context.json` directly using the Read tool.
 
-```bash
-python3 compact_sessions.py
-```
+For `/tmp/session_analysis.json`, check the file size first (`wc -c`).
+- **Under 200KB**: Read it directly.
+- **200KB or larger**: Do NOT compact or truncate the data. Instead, spawn subagents (via the Agent tool) to read and summarize portions of the file in parallel. For example:
+  - Subagent 1: Read sessions 1-3, summarize user message patterns and tool usage
+  - Subagent 2: Read sessions 4-6, same task
+  - Subagent 3: Read sessions 7-10, same task
+  
+  Each subagent should read its assigned portion of `/tmp/session_analysis.json` using the Read tool (with offset/limit or by parsing the JSON), then return a structured summary containing:
+  - Recurring user message themes and exact quotes
+  - Tool usage counts and repeated tool patterns
+  - Subagent tool patterns
+  
+  Collect all subagent summaries before proceeding to Step 3.
 
 ---
 
