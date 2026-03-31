@@ -11,11 +11,11 @@ Analyze recent long Claude Code sessions to:
 ## Step 1: Extract session data
 
 Run `extract_sessions.py` from this repository.
-Args: `python3 extract_sessions.py [num_sessions] [days]` (default: top 10, last 7 days)
+Args: `python3 extract_sessions.py [num_sessions] [days]` (default: top 20, last 7 days)
 
 ```bash
-python3 extract_sessions.py 10 7    # last 7 days, top 10
-python3 extract_sessions.py 10 30   # last 30 days, top 10
+python3 extract_sessions.py          # last 7 days, top 20
+python3 extract_sessions.py 20 30   # last 30 days, top 20
 ```
 
 Output: `/tmp/session_analysis.json`
