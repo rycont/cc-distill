@@ -35,16 +35,19 @@ Look across ALL sessions simultaneously for:
 - User interrupting or correcting Claude the same way (`Request interrupted`, angry corrections)
 - Existing skills that should have been invoked but weren't
 
-### Track B: Per-session severe waste (exactly 4 background subagents)
+### Track B: Per-session severe waste (one Sonnet subagent per session, all background)
 
-Split the sessions into 4 roughly equal batches. Spawn exactly 4 subagents, all at once, all in background. Each reads its batch from `/tmp/session_analysis.json` and returns **one line per session**:
+Spawn one subagent per session — if there are 20 sessions, spawn 20 subagents. All at once, all in background, all using `model: "sonnet"`. Each subagent reads only its assigned session from `/tmp/session_analysis.json` (by index) and returns **exactly one line**:
 
 ```
-session_id | OK
-session_id | WASTE: <what happened> — <scale: e.g., "47 failed docker commands", "same file edited 12 times">
+OK
+```
+or:
+```
+WASTE: <what happened> — <scale: e.g., "47 failed docker commands", "same file edited 12 times">
 ```
 
-That's it. No analysis, no suggestions — just flag waste with evidence. You handle classification in Step 3.
+No analysis, no suggestions — just flag waste with evidence. You handle classification in Step 3.
 
 ### After both tracks complete
 
