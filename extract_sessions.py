@@ -54,13 +54,10 @@ def find_subagents(path):
     return []
 
 
-NOISE_PREFIXES = ("task-notification", "<task-notification", "command-name", "<command-name",
-                   "<local-command-caveat", "Request interrupted", "[Request interrupted")
-
 def _is_noise(text):
     """Filter out system-generated messages that aren't real user input."""
     stripped = text.strip().lstrip("<")
-    return any(stripped.startswith(p.lstrip("<")) for p in NOISE_PREFIXES)
+    return stripped.startswith("task-notification") or stripped.startswith("/task-notification")
 
 
 def text_of(content):
