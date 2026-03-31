@@ -6,7 +6,7 @@ Distill inefficiencies from Claude Code sessions into actionable improvements.
 
 ---
 
-## Phase 1: Extract
+## Step 1: Extract
 
 Run both scripts from this repository:
 
@@ -19,76 +19,54 @@ python3 collect_existing.py           # → /tmp/existing_context.json
 
 ---
 
-## Phase 2: Analyze (two tracks in parallel)
+## Step 2: Read and analyze
 
-First, read `/tmp/existing_context.json` — study existing skills and AGENTS.md as classification reference.
+Do NOT spawn subagents. Do everything yourself in this conversation.
 
-Then run **both tracks simultaneously**:
+1. Read `/tmp/existing_context.json` — study existing skills and AGENTS.md as classification reference.
+2. Read `/tmp/session_analysis.json` in full. Look across ALL sessions for:
 
-### Track A: Cross-session patterns (you, directly)
+**Repeated patterns across sessions:**
+- Same or similar user instructions appearing in multiple sessions
+- Same type of failure/struggle happening across sessions (check `bash_commands` for repeated failures)
+- User manually orchestrating the same multi-step workflow each time
+- User interrupting or correcting Claude the same way (`Request interrupted`, angry corrections)
+- Existing skills that should have been invoked but weren't
 
-Read `/tmp/session_analysis.json` in full. Do NOT spawn subagents for this — you must see all sessions at once. Look for:
+**Per-session severe issues:**
+- Extreme `llm_human_ratio` (>5x = Claude talked too much)
+- Long `duration_minutes` with few `user_turns` = Claude spinning alone
+- Same bash command retried many times in one session
 
-- **Repeated user instructions**: same or similar text across multiple sessions
-- **Repeated struggles**: same type of failure in different sessions
-- **Repeated workflow triggers**: user manually orchestrating the same multi-step process
-- **Repeated corrections**: user interrupting or correcting Claude the same way (check `Request interrupted` and what preceded it)
-- **Skill underuse**: existing skills that should have been invoked but weren't
+**Classify each finding:**
+- Project-specific directive → AGENTS.md
+- Cross-project workflow → Skill
 
-### Track B: Per-session deep dive (subagents, in background)
-
-Spawn one subagent per session (or batch 2-3 small ones). Run them all in the background while you work on Track A. Each subagent reads its assigned session from `/tmp/session_analysis.json` and answers:
-
-> "What was the single biggest waste of time in this session? Look at bash commands that failed repeatedly, files edited over and over, long stretches of tool calls without progress. If nothing significant, say OK."
-
-Each subagent returns one line:
-```
-OK
-```
-or:
-```
-WASTE | <what happened, specifically> | <how long / how many retries>
-```
+**Cross-reference** with existing skills/AGENTS.md — skip what's already covered, or note it's not working.
 
 ---
 
-## Phase 3: Synthesize
+## Step 3: Output
 
-Collect Track A findings and Track B subagent results. Merge them:
+Two tables, then ask for selection.
 
-1. **Deduplicate** — Track B might find individual instances of what Track A found as a pattern. Merge these (the cross-session pattern is more valuable).
-2. **Classify** — Skill or AGENTS.md? Use existing assets as reference:
-   - Project-specific, short directive → AGENTS.md
-   - Cross-project workflow, multi-step → Skill
-3. **Cross-reference** — skip what's already covered by existing skills/AGENTS.md, or note if existing guidance isn't working.
-
----
-
-## Output
-
-Group findings by type. Use this exact format:
-
-```
 ### Skills
 
 | # | Name | Action | Evidence |
 |---|------|--------|----------|
-| 1 | `/dev-up` (new) | Docker compose + DB seed + health check를 한 커맨드로 | 0f68f9e9, 55c4b8ad, ecf9e93d |
-| 2 | `/code-review` (enhance) | APPROVED까지 자동 반복 루프 추가 | 55c4b8ad, abe6ebd3, 46fe6c33 |
+| 1 | `/example` (new) | One sentence description | sess1, sess2 |
 
 ### AGENTS.md
 
 | # | Project | Guideline | Evidence |
 |---|---------|-----------|----------|
-| 1 | horang | 작업 전 `/notes/task-log/` 회고 먼저 읽기 | 0f68f9e9, 55c4b8ad, 46fe6c33 |
-| 2 | horang-frontend-v2 | 기존 컴포넌트 확인 후 UI 생성, px 하드코딩 금지 | a55bead5, 16b298fc |
-```
+| 1 | project | One sentence directive | sess1, sess2 |
 
-Keep each Action cell to one sentence. Session IDs can be truncated to first 8 chars.
+Session IDs truncated to first 8 chars. Each Action/Guideline is one sentence max.
 
-After the tables, ask: "Which of these should I apply? (e.g., `1, 3, 5` or `all`)"
+Then ask: "Which of these should I apply? (e.g., `1, 3, 5` or `all`)"
 
 **Rules:**
-- Every row must cite specific session IDs as evidence
+- Every row must cite session IDs
 - No sensitive data in output
 - If nothing meaningful is found, say so
