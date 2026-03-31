@@ -6,16 +6,33 @@ Sources:
   - ~/.claude/projects/*/*.jsonl (current format)
   - Subagents included (*/subagents/*.jsonl)
 
+Extracts:
+  - User messages
+  - Tool usage with inputs (file paths, commands, search patterns)
+  - Struggle signals (repeated errors, retry loops, edit churn)
+  - Subagent prompts
+
 Output: /tmp/session_analysis.json
 """
-import sys, json, os, time
+import sys, json, os, time, re
 from pathlib import Path
+from collections import Counter
 
 NUM = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 30
 CLAUDE_DIR = Path.home() / ".claude"
 OUT = Path("/tmp/session_analysis.json")
 CUTOFF = time.time() - DAYS * 86400
+
+# Patterns that look like secrets
+SECRET_RE = re.compile(
+    r"(?i)(password|passwd|secret|token|api[_-]?key|authorization)[=:\"' ]+\S+",
+)
+
+
+def mask_secrets(text):
+    """Replace potential secrets with [REDACTED]."""
+    return SECRET_RE.sub(r"\1=[REDACTED]", text)
 
 
 def find_all_sessions():
@@ -41,9 +58,22 @@ def find_subagents(session_path):
     return []
 
 
-def parse_jsonl(fpath):
-    """Parse JSONL file -> (user_messages, tool_sequence, tool_counts, cwd)"""
-    user_msgs, tools, counts, cwd = [], [], {}, None
+def parse_jsonl(fpath, extract_struggles=True):
+    """Parse JSONL → rich session data including struggle signals."""
+    user_msgs = []
+    tool_details = []  # [{name, input_summary, timestamp}, ...]
+    tool_counts = {}
+    cwd = None
+    timestamps = []
+
+    # Struggle tracking
+    errors = []           # [{tool, error_preview, timestamp}, ...]
+    bash_commands = []     # [{command, failed, timestamp}, ...]
+    edited_files = []      # file paths from Edit/Write
+    read_files = []        # file paths from Read
+
+    # Pending tool_use IDs → names (for matching results in new format)
+    pending_tools = {}
 
     with open(fpath, "r", errors="replace") as f:
         for line in f:
@@ -52,37 +82,98 @@ def parse_jsonl(fpath):
             except (json.JSONDecodeError, ValueError):
                 continue
             dtype = d.get("type", "")
+            ts = d.get("timestamp", "")
 
-            # Current format: type=user, message.content
+            # ── New format: type=user ──
             if dtype == "user" and "message" in d:
-                content = d["message"].get("content", "")
+                msg = d["message"]
+                content = msg.get("content", "")
+
+                # Extract user text
                 text = _extract_text(content)
                 if text:
-                    user_msgs.append(text[:3000])
+                    user_msgs.append(mask_secrets(text[:3000]))
+
                 if d.get("cwd") and not cwd:
                     cwd = d["cwd"]
+                if ts:
+                    timestamps.append(ts)
 
-            # Current format: type=assistant, tool_use blocks
+                # Extract tool_results from user messages (new format)
+                if isinstance(content, list):
+                    for b in content:
+                        if isinstance(b, dict) and b.get("type") == "tool_result":
+                            tool_id = b.get("tool_use_id", "")
+                            is_err = b.get("is_error", False)
+                            result_text = str(b.get("content", ""))[:500]
+                            tool_name = pending_tools.pop(tool_id, "?")
+
+                            if is_err or _looks_like_error(result_text):
+                                errors.append({
+                                    "tool": tool_name,
+                                    "error": mask_secrets(result_text[:300]),
+                                    "timestamp": ts,
+                                })
+
+            # ── New format: type=assistant ──
             elif dtype == "assistant" and "message" in d:
-                for block in (d["message"].get("content") or []):
-                    if isinstance(block, dict) and block.get("type") == "tool_use":
-                        tn = block.get("name", "?")
-                        tools.append(tn)
-                        counts[tn] = counts.get(tn, 0) + 1
+                for b in (d["message"].get("content") or []):
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        tn = b.get("name", "?")
+                        inp = b.get("input", {}) if isinstance(b.get("input"), dict) else {}
+                        tool_id = b.get("id", "")
 
-            # Legacy format: type=user, content directly
+                        tool_counts[tn] = tool_counts.get(tn, 0) + 1
+                        pending_tools[tool_id] = tn
+
+                        summary = _summarize_tool_input(tn, inp)
+                        tool_details.append({"name": tn, "summary": mask_secrets(summary), "timestamp": ts})
+
+                        if extract_struggles:
+                            _track_tool_for_struggles(tn, inp, ts, bash_commands, edited_files, read_files)
+
+            # ── Legacy format: type=user (no message wrapper) ──
             elif dtype == "user" and "message" not in d:
                 text = _extract_text(d.get("content", ""))
                 if text:
-                    user_msgs.append(text[:3000])
+                    user_msgs.append(mask_secrets(text[:3000]))
+                if ts:
+                    timestamps.append(ts)
 
-            # Legacy format: type=tool_use
+            # ── Legacy format: type=tool_use ──
             elif dtype == "tool_use":
                 tn = d.get("tool_name", "?")
-                tools.append(tn)
-                counts[tn] = counts.get(tn, 0) + 1
+                inp = d.get("tool_input", {}) if isinstance(d.get("tool_input"), dict) else {}
+                tool_counts[tn] = tool_counts.get(tn, 0) + 1
 
-    return user_msgs, tools, counts, cwd
+                summary = _summarize_tool_input(tn, inp)
+                tool_details.append({"name": tn, "summary": mask_secrets(summary), "timestamp": ts})
+
+                if extract_struggles:
+                    _track_tool_for_struggles(tn, inp, ts, bash_commands, edited_files, read_files)
+
+            # ── Legacy format: type=tool_result ──
+            elif dtype == "tool_result":
+                result_text = str(d.get("content", ""))[:500]
+                is_err = d.get("is_error", False)
+                if is_err or _looks_like_error(result_text):
+                    errors.append({
+                        "tool": "?",
+                        "error": mask_secrets(result_text[:300]),
+                        "timestamp": ts,
+                    })
+
+    # Build struggle analysis
+    struggles = _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs) if extract_struggles else {}
+
+    return {
+        "user_messages": user_msgs,
+        "tool_details": tool_details,
+        "tool_counts": tool_counts,
+        "cwd": cwd,
+        "timestamps": timestamps,
+        "struggles": struggles,
+    }
 
 
 def _extract_text(content):
@@ -99,8 +190,128 @@ def _extract_text(content):
     return ""
 
 
-def repeated_patterns(tool_seq, min_count=3):
+def _looks_like_error(text):
+    """Heuristic: does this tool result look like an error?"""
+    indicators = ["error", "Error", "ERROR", "exit code 1", "Exit code 1",
+                  "Traceback", "FAILED", "failed", "command not found",
+                  "No such file", "Permission denied", "ENOENT", "EACCES"]
+    return any(ind in text[:500] for ind in indicators)
+
+
+def _summarize_tool_input(tool_name, inp):
+    """Extract the most relevant info from tool input."""
+    if tool_name == "Bash":
+        cmd = str(inp.get("command", ""))[:200]
+        return f"$ {cmd}"
+    elif tool_name in ("Read", "Edit", "Write"):
+        fp = inp.get("file_path", "")
+        if tool_name == "Edit":
+            old = str(inp.get("old_string", ""))[:80]
+            return f"{fp} (edit: {old}...)"
+        return fp
+    elif tool_name == "Grep":
+        pattern = inp.get("pattern", "")
+        path = inp.get("path", "")
+        return f"/{pattern}/ in {path}" if path else f"/{pattern}/"
+    elif tool_name == "Glob":
+        return inp.get("pattern", "")
+    elif tool_name == "Agent" or tool_name == "task":
+        desc = inp.get("description", "")
+        prompt = str(inp.get("prompt", ""))[:200]
+        return f"{desc}: {prompt}" if desc else prompt
+    else:
+        # Generic: just list keys
+        return ", ".join(f"{k}={str(v)[:60]}" for k, v in list(inp.items())[:3])
+
+
+def _track_tool_for_struggles(tool_name, inp, ts, bash_commands, edited_files, read_files):
+    """Track tool calls that might indicate struggles."""
+    if tool_name == "Bash":
+        cmd = str(inp.get("command", ""))[:300]
+        bash_commands.append({"command": mask_secrets(cmd), "timestamp": ts})
+    elif tool_name == "Edit":
+        fp = inp.get("file_path", "")
+        if fp:
+            edited_files.append(fp)
+    elif tool_name == "Write":
+        fp = inp.get("file_path", "")
+        if fp:
+            edited_files.append(fp)
+    elif tool_name == "Read":
+        fp = inp.get("file_path", "")
+        if fp:
+            read_files.append(fp)
+
+
+def _analyze_struggles(errors, bash_commands, edited_files, read_files, tool_details, user_msgs):
+    """Detect struggle patterns from collected signals."""
+    struggles = {}
+
+    # 1. Repeated errors — same error appearing multiple times
+    if errors:
+        # Group errors by first 100 chars of error message
+        error_groups = Counter()
+        for e in errors:
+            key = e["error"][:100]
+            error_groups[key] += 1
+        repeated_errors = {k: v for k, v in error_groups.most_common(10) if v >= 2}
+        if repeated_errors:
+            struggles["repeated_errors"] = {
+                "count": sum(repeated_errors.values()),
+                "unique_errors": len(repeated_errors),
+                "top_errors": [{"error_preview": k, "occurrences": v} for k, v in repeated_errors.items()],
+            }
+
+    # 2. Edit churn — same file edited many times
+    if edited_files:
+        file_edits = Counter(edited_files)
+        churn_files = {f: c for f, c in file_edits.most_common(10) if c >= 3}
+        if churn_files:
+            struggles["edit_churn"] = {
+                "files": [{"path": f, "edit_count": c} for f, c in churn_files.items()],
+            }
+
+    # 3. Bash retry loops — similar commands retried
+    if len(bash_commands) >= 3:
+        # Normalize commands (strip whitespace, truncate) and find repeats
+        normalized = Counter()
+        for bc in bash_commands:
+            # Normalize: collapse whitespace, take first 100 chars
+            norm = re.sub(r'\s+', ' ', bc["command"])[:100]
+            normalized[norm] += 1
+        retries = {k: v for k, v in normalized.most_common(10) if v >= 3}
+        if retries:
+            struggles["bash_retries"] = {
+                "commands": [{"command_preview": k, "attempts": v} for k, v in retries.items()],
+            }
+
+    # 4. Thrashing ratio — high tool calls per user message = Claude spinning
+    total_tools = len(tool_details)
+    total_user = len(user_msgs)
+    if total_user > 0:
+        ratio = total_tools / total_user
+        if ratio > 15:  # More than 15 tool calls per user message = likely struggling
+            struggles["thrashing"] = {
+                "tool_calls": total_tools,
+                "user_messages": total_user,
+                "ratio": round(ratio, 1),
+            }
+
+    # 5. Read repetition — same file read many times
+    if read_files:
+        read_counts = Counter(read_files)
+        repeated_reads = {f: c for f, c in read_counts.most_common(10) if c >= 4}
+        if repeated_reads:
+            struggles["repeated_reads"] = {
+                "files": [{"path": f, "read_count": c} for f, c in repeated_reads.items()],
+            }
+
+    return struggles
+
+
+def repeated_patterns(tool_details, min_count=3):
     """Detect repeated tool sequences using sliding windows of size 2-5."""
+    tool_seq = [t["name"] for t in tool_details]
     pats = {}
     for ws in range(2, 6):
         for i in range(len(tool_seq) - ws + 1):
@@ -114,47 +325,84 @@ sessions = find_all_sessions()
 result = []
 
 for spath in sessions:
-    msgs, tools, tcounts, cwd = parse_jsonl(spath)
+    data = parse_jsonl(spath, extract_struggles=True)
 
+    # Subagents
     sa_files = find_subagents(spath)
     subagents = []
-    all_sa_tools = []
+    all_sa_tool_details = []
     for sa in sa_files:
-        _, sa_tools, sa_counts, _ = parse_jsonl(sa)
-        all_sa_tools.extend(sa_tools)
+        sa_data = parse_jsonl(sa, extract_struggles=True)
+        all_sa_tool_details.extend(sa_data["tool_details"])
         subagents.append({
             "name": sa.name.replace(".jsonl", ""),
             "size_kb": round(sa.stat().st_size / 1024),
-            "tool_counts": sa_counts,
-            "repeated_patterns": repeated_patterns(sa_tools),
+            "prompt": sa_data["user_messages"][0][:500] if sa_data["user_messages"] else None,
+            "tool_counts": sa_data["tool_counts"],
+            "repeated_patterns": repeated_patterns(sa_data["tool_details"]),
+            "struggles": sa_data["struggles"],
         })
 
     src = "transcripts" if "/transcripts/" in str(spath) else str(spath).split("/projects/")[1].split("/")[0] if "/projects/" in str(spath) else "?"
 
-    result.append({
+    # Trim tool_details for output (keep summary, drop verbose fields)
+    trimmed_tools = [{"name": t["name"], "summary": t["summary"]} for t in data["tool_details"]]
+
+    session_out = {
         "session_id": spath.stem[:24],
         "source": src,
-        "cwd": cwd,
+        "cwd": data["cwd"],
         "size_kb": round(spath.stat().st_size / 1024),
-        "user_message_count": len(msgs),
-        "user_messages": msgs,
-        "main_tool_counts": tcounts,
-        "main_tool_calls": sum(tcounts.values()),
-        "main_repeated_patterns": repeated_patterns(tools),
+        "user_message_count": len(data["user_messages"]),
+        "user_messages": data["user_messages"],
+        "main_tool_counts": data["tool_counts"],
+        "main_tool_calls": sum(data["tool_counts"].values()),
+        "main_tool_details": trimmed_tools,
+        "main_repeated_patterns": repeated_patterns(data["tool_details"]),
+        "struggles": data["struggles"],
         "subagent_count": len(subagents),
-        "subagent_total_calls": len(all_sa_tools),
+        "subagent_total_calls": len(all_sa_tool_details),
         "subagent_tool_counts": dict(
             sorted(
                 {k: v for sa in subagents for k, v in sa["tool_counts"].items()}.items(),
                 key=lambda x: -x[1],
             )[:20]
         ) if subagents else {},
-        "subagent_repeated_patterns": repeated_patterns(all_sa_tools),
+        "subagent_repeated_patterns": repeated_patterns(all_sa_tool_details),
         "subagent_details": subagents,
-    })
+    }
+    result.append(session_out)
+
+# Sort by struggle severity (sessions with more struggles first)
+def struggle_score(s):
+    st = s.get("struggles", {})
+    score = 0
+    score += st.get("repeated_errors", {}).get("count", 0) * 3
+    score += sum(f["edit_count"] for f in st.get("edit_churn", {}).get("files", [])) * 2
+    score += sum(c["attempts"] for c in st.get("bash_retries", {}).get("commands", [])) * 2
+    score += st.get("thrashing", {}).get("ratio", 0)
+    # Include subagent struggles
+    for sa in s.get("subagent_details", []):
+        sa_st = sa.get("struggles", {})
+        score += sa_st.get("repeated_errors", {}).get("count", 0) * 2
+    return score
+
+result.sort(key=struggle_score, reverse=True)
 
 OUT.write_text(json.dumps(result, ensure_ascii=False, indent=1))
 print(f"Extracted {len(result)} sessions (last {DAYS} days, top {NUM}) -> {OUT}")
+print(f"Sorted by struggle severity (most struggles first)\n")
 for s in result:
     sa = f", subagents={s['subagent_count']}" if s["subagent_count"] else ""
-    print(f"  {s['session_id']}  {s['size_kb']}KB  msgs={s['user_message_count']}  tools={s['main_tool_calls']}{sa}  [{s['source'][:30]}]")
+    st = s.get("struggles", {})
+    struggle_parts = []
+    if "repeated_errors" in st:
+        struggle_parts.append(f"errors={st['repeated_errors']['count']}")
+    if "edit_churn" in st:
+        struggle_parts.append(f"churn={len(st['edit_churn']['files'])}files")
+    if "bash_retries" in st:
+        struggle_parts.append(f"retries={len(st['bash_retries']['commands'])}cmds")
+    if "thrashing" in st:
+        struggle_parts.append(f"thrash={st['thrashing']['ratio']}x")
+    struggle_str = f"  STRUGGLES: {', '.join(struggle_parts)}" if struggle_parts else ""
+    print(f"  {s['session_id']}  {s['size_kb']}KB  msgs={s['user_message_count']}  tools={s['main_tool_calls']}{sa}  [{s['source'][:30]}]{struggle_str}")

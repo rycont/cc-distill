@@ -66,6 +66,14 @@ Scan across sessions for any kind of repetition:
 - **Tool usage patterns**: repeated tool sequences (Grep→Read→Grep→Read loops), subagent wandering, always searching for the same entry points
 - **Workflow patterns**: multi-step processes the user triggers manually each time
 - **Context-setting patterns**: boilerplate the user pastes to set up Claude's behavior
+- **Struggle patterns** (in `struggles` field): sessions where Claude got stuck — these are high-value improvement targets. Look for:
+  - `repeated_errors`: same error appearing multiple times → Claude retried without changing approach
+  - `edit_churn`: same file edited 3+ times → couldn't get it right, kept patching
+  - `bash_retries`: same command retried 3+ times → environment issue Claude couldn't solve
+  - `thrashing`: high tool-call-to-user-message ratio → Claude spinning without progress
+  - `repeated_reads`: same file read 4+ times → lost context or couldn't find what it needed
+  
+  **Struggles are the most actionable patterns.** A struggle that repeats across sessions means the user keeps hitting the same wall. Prioritize these over minor style repetitions.
 
 ### 3b: Classify each pattern → Skill or AGENTS.md
 
