@@ -56,40 +56,70 @@ Deduplicate: Track B individual findings that match Track A cross-session patter
 
 ---
 
+## Step 2.5: Root-cause analysis for existing rules that failed
+
+**This is the most important step.** Before proposing any new rules, check every finding against existing skills, AGENTS.md, and memory files (`/tmp/existing_context.json`).
+
+For each finding that already has a corresponding rule:
+
+1. **Find the exact existing rule** — quote it
+2. **Find the session moments where it was violated** — what was Claude doing right before the violation? Was it a subagent (which might not inherit the rule)? Was context already very long (compaction may have dropped the rule)? Was the rule vague enough to be interpreted differently?
+3. **Diagnose why it failed** — common causes:
+   - Rule is in memory/feedback but not in AGENTS.md (subagents don't see it)
+   - Rule is vague ("use docker" vs "run exactly `docker compose -f compose.yaml -f compose.local.yaml up -d`")
+   - Rule conflicts with another rule or default behavior
+   - Rule is buried in a long AGENTS.md and gets compacted away
+   - Subagent was spawned without the rule in its prompt
+4. **Propose a fix that addresses the root cause**, not just "add it again":
+   - If subagents don't see it → inject into subagent prompts, or add a hook
+   - If too vague → rewrite with exact commands/paths
+   - If buried → move to top of AGENTS.md, or split into a dedicated section
+   - If fundamentally unenforceable by prompt → suggest a hook (`settings.json`) that blocks the action mechanically
+
+**Do NOT propose adding a rule that already exists in the same form. That is useless.**
+
+---
+
 ## Step 3: Classify and output
 
-**Classify each finding** as Skill or AGENTS.md. Use existing assets as reference.
+**Classify each finding** as Skill, AGENTS.md, Hook, or Rule Rewrite. Use existing assets as reference.
 
 **Important: Skills and AGENTS.md must reference each other.**
 - If you propose a new Skill (e.g., `/e2e-setup`), also propose an AGENTS.md entry telling Claude when to use it (e.g., "Before E2E testing, run `/e2e-setup`").
 - If you propose an AGENTS.md guideline that a Skill could automate, note that too.
 - If an existing Skill should be mentioned in AGENTS.md but isn't, flag it.
 
-**Cross-reference** with existing skills/AGENTS.md — skip what's already covered, or note it's not working.
-
 ### Output format
 
-Two tables:
+Three tables. **Rule Fixes first** (highest value — fixing what's already broken), then new proposals.
 
-#### Skills
+#### Rule Fixes (existing rules that aren't working)
+
+| # | Current rule | Why it failed | Fix | Evidence |
+|---|-------------|---------------|-----|----------|
+| 1 | memory: "agent-browser 사용, gstack 금지" | Subagents don't inherit memory files; rule only in feedback, not AGENTS.md | Move to AGENTS.md top section + add hook blocking `gstack` binary | a55bead5 (143 calls), 16b298fc (66 calls) |
+| 2 | AGENTS.md: "회고 검색 후 작업 시작" | Rule is vague — doesn't specify search keywords or directory | Rewrite: "작업 시작 전 `rg <관련키워드> notes/` 실행하여 회고 확인" | 46fe6c33, 0f68f9e9 |
+
+#### New Skills
 
 | # | Name | Action | AGENTS.md link | Evidence |
 |---|------|--------|----------------|----------|
-| 1 | `/e2e-setup` (new) | Docker + DB seed + auth + health check 자동화 | → AGENTS.md #3 "E2E 전에 /e2e-setup 실행" | 0f68f9e9, a55bead5 |
+| 1 | `/e2e-setup` (new) | Docker + DB seed + auth + health check 자동화 | → AGENTS.md #N | 0f68f9e9, a55bead5 |
 
-#### AGENTS.md
+#### New AGENTS.md entries
 
 | # | Project | Guideline | Skill link | Evidence |
 |---|---------|-----------|------------|----------|
-| 3 | horang | E2E 테스트 전에 `/e2e-setup` 실행 | ← Skill #1 | 0f68f9e9, a55bead5 |
-| 4 | horang | 브라우저 작업은 agent-browser만 사용, gstack 금지 | — | a55bead5, 3a46b2c8 |
+| N | horang | E2E 테스트 전에 `/e2e-setup` 실행 | ← Skill #1 | 0f68f9e9, a55bead5 |
 
-Session IDs truncated to first 8 chars. Each Action/Guideline is one sentence max.
+Session IDs truncated to first 8 chars. One sentence per cell max.
 
 Then ask: "Which of these should I apply? (e.g., `1, 3, 5` or `all`)"
 
 **Rules:**
 - Every row must cite session IDs
 - Skills without a corresponding AGENTS.md entry are incomplete — always pair them
+- Rule Fixes must explain WHY it failed, not just what to change
+- Do NOT propose adding a rule that already exists in the same form
 - No sensitive data in output
 - If nothing meaningful is found, say so
