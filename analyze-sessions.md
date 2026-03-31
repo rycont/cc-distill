@@ -66,16 +66,29 @@ Collect Track A findings and Track B subagent results. Merge them:
 
 ## Output
 
-**Flat bullet list. One line per issue. No headers, no sections.**
+Group findings by type. Use this exact format:
 
-Format:
 ```
-- [Skill: /name] or [AGENTS.md: project] — what to do, in one sentence (evidence: sessions X, Y, Z)
+### Skills
+
+| # | Name | Action | Evidence |
+|---|------|--------|----------|
+| 1 | `/dev-up` (new) | Docker compose + DB seed + health check를 한 커맨드로 | 0f68f9e9, 55c4b8ad, ecf9e93d |
+| 2 | `/code-review` (enhance) | APPROVED까지 자동 반복 루프 추가 | 55c4b8ad, abe6ebd3, 46fe6c33 |
+
+### AGENTS.md
+
+| # | Project | Guideline | Evidence |
+|---|---------|-----------|----------|
+| 1 | horang | 작업 전 `/notes/task-log/` 회고 먼저 읽기 | 0f68f9e9, 55c4b8ad, 46fe6c33 |
+| 2 | horang-frontend-v2 | 기존 컴포넌트 확인 후 UI 생성, px 하드코딩 금지 | a55bead5, 16b298fc |
 ```
 
-After the list, ask: "Which of these should I apply?"
+Keep each Action cell to one sentence. Session IDs can be truncated to first 8 chars.
+
+After the tables, ask: "Which of these should I apply? (e.g., `1, 3, 5` or `all`)"
 
 **Rules:**
-- Every bullet must cite specific session IDs as evidence
+- Every row must cite specific session IDs as evidence
 - No sensitive data in output
 - If nothing meaningful is found, say so
