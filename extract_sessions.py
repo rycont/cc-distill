@@ -54,6 +54,15 @@ def find_subagents(path):
     return []
 
 
+NOISE_PREFIXES = ("task-notification", "<task-notification", "command-name", "<command-name",
+                   "<local-command-caveat", "Request interrupted", "[Request interrupted")
+
+def _is_noise(text):
+    """Filter out system-generated messages that aren't real user input."""
+    stripped = text.strip().lstrip("<")
+    return any(stripped.startswith(p.lstrip("<")) for p in NOISE_PREFIXES)
+
+
 def text_of(content):
     if isinstance(content, str):
         return content.strip()
@@ -103,8 +112,8 @@ def parse(fpath):
             # --- New format ---
             if dtype == "user" and "message" in d:
                 text = text_of(d["message"].get("content", ""))
-                if text:
-                    user_msgs.append(mask(text[:3000]))
+                if text and not _is_noise(text):
+                    user_msgs.append(mask(text[:1000]))
                     user_chars += len(text)
                     user_turns += 1
                 if d.get("cwd") and not cwd:
@@ -123,8 +132,8 @@ def parse(fpath):
             # --- Legacy format ---
             elif dtype == "user" and "message" not in d:
                 text = text_of(d.get("content", ""))
-                if text:
-                    user_msgs.append(mask(text[:3000]))
+                if text and not _is_noise(text):
+                    user_msgs.append(mask(text[:1000]))
                     user_chars += len(text)
                     user_turns += 1
 
