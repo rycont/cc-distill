@@ -218,10 +218,18 @@ for spath in sessions:
     })
 
 OUT.write_text(json.dumps(result, ensure_ascii=False, indent=1))
-print(f"Extracted {len(result)} sessions (last {DAYS}d, top {NUM}) -> {OUT}")
-for s in result:
+
+# Also write individual session files for subagent consumption
+for i, s in enumerate(result):
+    individual = Path(f"/tmp/session_{i}.json")
+    individual.write_text(json.dumps(s, ensure_ascii=False, indent=1))
+
+print(f"Extracted {len(result)} sessions (last {DAYS}d, top {NUM})")
+print(f"  Combined: {OUT}")
+print(f"  Individual: /tmp/session_0.json .. /tmp/session_{len(result)-1}.json")
+for i, s in enumerate(result):
     st = s["stats"]
     sa = f"  sa={len(s['subagents'])}" if s["subagents"] else ""
     ratio = f"  llm/human={st['llm_human_ratio']}x" if st["llm_human_ratio"] else ""
     dur = f"  {st['duration_minutes']}min" if st["duration_minutes"] else ""
-    print(f"  {s['session_id'][:20]}  {s['size_kb']}KB  turns={st['user_turns']}+{st['assistant_turns']}  tools={st['tool_calls']}{ratio}{dur}{sa}")
+    print(f"  [{i}] {s['session_id'][:20]}  {s['size_kb']}KB  turns={st['user_turns']}+{st['assistant_turns']}  tools={st['tool_calls']}{ratio}{dur}{sa}")

@@ -11,7 +11,7 @@ Distill inefficiencies from Claude Code sessions into actionable improvements.
 Run both scripts from this repository:
 
 ```bash
-python3 extract_sessions.py           # → /tmp/session_analysis.json
+python3 extract_sessions.py           # → /tmp/session_analysis.json + /tmp/session_0.json, session_1.json, ...
 python3 collect_existing.py           # → /tmp/existing_context.json
 ```
 
@@ -22,8 +22,8 @@ python3 collect_existing.py           # → /tmp/existing_context.json
 ## Step 2: Analyze (two parallel tracks)
 
 1. Read `/tmp/existing_context.json` — study existing skills and AGENTS.md as classification reference.
-2. Read `/tmp/session_analysis.json` in full.
-3. Launch **exactly 4 subagents** for Track B (see below), then immediately proceed with Track A yourself.
+2. Read `/tmp/session_analysis.json` — this is the combined file for your cross-session analysis.
+3. Launch Track B subagents (see below), then immediately start Track A yourself.
 
 ### Track A: Cross-session patterns (you, directly — do NOT delegate this)
 
@@ -35,9 +35,9 @@ Look across ALL sessions simultaneously for:
 - User interrupting or correcting Claude the same way (`Request interrupted`, angry corrections)
 - Existing skills that should have been invoked but weren't
 
-### Track B: Per-session severe waste (one Sonnet subagent per session, all background)
+### Track B: Per-session deep dive (one Sonnet subagent per session, all background)
 
-Spawn one subagent per session — if there are 20 sessions, spawn 20 subagents. All at once, all in background, all using `model: "sonnet"`. Each subagent reads only its assigned session from `/tmp/session_analysis.json` (by index) and returns:
+Spawn one subagent per session. All at once, all in background, all using `model: "sonnet"`. Each subagent reads **its own file** — `/tmp/session_0.json`, `/tmp/session_1.json`, etc. (NOT the combined file). Each returns:
 
 ```
 OK — no significant waste
@@ -48,39 +48,41 @@ WASTE: <what happened> — <scale>
 WASTE: <what happened> — <scale>
 ```
 
-Example:
-```
-WASTE: Docker compose failed 12 times, gave up and used uv run directly — 47 bash commands over 30 min
-WASTE: Spawned 5 duplicate subagents for the same stale closure debug — each ran 3+ minutes
-```
+No classification, no suggestions — just list every significant waste with evidence.
 
-No classification, no suggestions — just list every significant waste with evidence. You handle the rest in Step 3.
+### After both tracks complete, merge results
 
-### After both tracks complete
-
-**Classify each finding:**
-- Project-specific directive → AGENTS.md
-- Cross-project workflow → Skill
-
-**Cross-reference** with existing skills/AGENTS.md — skip what's already covered, or note it's not working.
+Deduplicate: Track B individual findings that match Track A cross-session patterns get merged (the cross-session pattern is more important). Track B findings that are unique stay as standalone items.
 
 ---
 
-## Step 3: Output
+## Step 3: Classify and output
 
-Two tables, then ask for selection.
+**Classify each finding** as Skill or AGENTS.md. Use existing assets as reference.
 
-### Skills
+**Important: Skills and AGENTS.md must reference each other.**
+- If you propose a new Skill (e.g., `/e2e-setup`), also propose an AGENTS.md entry telling Claude when to use it (e.g., "Before E2E testing, run `/e2e-setup`").
+- If you propose an AGENTS.md guideline that a Skill could automate, note that too.
+- If an existing Skill should be mentioned in AGENTS.md but isn't, flag it.
 
-| # | Name | Action | Evidence |
-|---|------|--------|----------|
-| 1 | `/example` (new) | One sentence description | sess1, sess2 |
+**Cross-reference** with existing skills/AGENTS.md — skip what's already covered, or note it's not working.
 
-### AGENTS.md
+### Output format
 
-| # | Project | Guideline | Evidence |
-|---|---------|-----------|----------|
-| 1 | project | One sentence directive | sess1, sess2 |
+Two tables:
+
+#### Skills
+
+| # | Name | Action | AGENTS.md link | Evidence |
+|---|------|--------|----------------|----------|
+| 1 | `/e2e-setup` (new) | Docker + DB seed + auth + health check 자동화 | → AGENTS.md #3 "E2E 전에 /e2e-setup 실행" | 0f68f9e9, a55bead5 |
+
+#### AGENTS.md
+
+| # | Project | Guideline | Skill link | Evidence |
+|---|---------|-----------|------------|----------|
+| 3 | horang | E2E 테스트 전에 `/e2e-setup` 실행 | ← Skill #1 | 0f68f9e9, a55bead5 |
+| 4 | horang | 브라우저 작업은 agent-browser만 사용, gstack 금지 | — | a55bead5, 3a46b2c8 |
 
 Session IDs truncated to first 8 chars. Each Action/Guideline is one sentence max.
 
@@ -88,5 +90,6 @@ Then ask: "Which of these should I apply? (e.g., `1, 3, 5` or `all`)"
 
 **Rules:**
 - Every row must cite session IDs
+- Skills without a corresponding AGENTS.md entry are incomplete — always pair them
 - No sensitive data in output
 - If nothing meaningful is found, say so
