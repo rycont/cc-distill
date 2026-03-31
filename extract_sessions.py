@@ -160,7 +160,7 @@ def parse(fpath):
     tool_counts = Counter(t["name"] for t in tools)
     file_paths = [t["input"] for t in tools if t["name"] in ("Read", "Edit", "Write") and t["input"]]
     file_counts = Counter(file_paths).most_common(10)
-    bash_cmds = [t["input"] for t in tools if t["name"] == "Bash" and t["input"]]
+    bash_cmds = [t["input"][:100] for t in tools if t["name"] == "Bash" and t["input"]]
     grep_patterns = [t["input"] for t in tools if t["name"] == "Grep" and t["input"]]
 
     return {
@@ -168,8 +168,8 @@ def parse(fpath):
         "tool_summary": {
             "counts": dict(tool_counts.most_common()),
             "top_files": [{"path": f, "times": c} for f, c in file_counts],
-            "bash_commands": bash_cmds[:20],
-            "grep_patterns": grep_patterns[:10],
+            "bash_commands": bash_cmds,
+            "grep_patterns": grep_patterns,
         },
         "cwd": cwd,
         "stats": {
