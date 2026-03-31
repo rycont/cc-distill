@@ -37,17 +37,24 @@ Look across ALL sessions simultaneously for:
 
 ### Track B: Per-session severe waste (one Sonnet subagent per session, all background)
 
-Spawn one subagent per session — if there are 20 sessions, spawn 20 subagents. All at once, all in background, all using `model: "sonnet"`. Each subagent reads only its assigned session from `/tmp/session_analysis.json` (by index) and returns **exactly one line**:
+Spawn one subagent per session — if there are 20 sessions, spawn 20 subagents. All at once, all in background, all using `model: "sonnet"`. Each subagent reads only its assigned session from `/tmp/session_analysis.json` (by index) and returns:
 
 ```
-OK
+OK — no significant waste
 ```
-or:
+or one `WASTE` line per issue found (there can be multiple):
 ```
-WASTE: <what happened> — <scale: e.g., "47 failed docker commands", "same file edited 12 times">
+WASTE: <what happened> — <scale>
+WASTE: <what happened> — <scale>
 ```
 
-No analysis, no suggestions — just flag waste with evidence. You handle classification in Step 3.
+Example:
+```
+WASTE: Docker compose failed 12 times, gave up and used uv run directly — 47 bash commands over 30 min
+WASTE: Spawned 5 duplicate subagents for the same stale closure debug — each ran 3+ minutes
+```
+
+No classification, no suggestions — just list every significant waste with evidence. You handle the rest in Step 3.
 
 ### After both tracks complete
 
