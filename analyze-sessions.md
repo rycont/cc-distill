@@ -186,9 +186,106 @@ python3 /tmp/extract_sessions.py 10 30   # 최근 30일, 상위 10개
 
 ---
 
+## Step 1.5: 기존 스킬 및 AGENTS.md 수집
+
+세션 분석 전에, 사용자가 이미 만들어 둔 스킬과 AGENTS.md를 먼저 수집하세요.
+아래 스크립트를 `/tmp/collect_existing.py`에 저장하고 실행하세요.
+
+```python
+#!/usr/bin/env python3
+"""
+기존 스킬 목록 + AGENTS.md 수집기
+- ~/.claude/skills/*/SKILL.md
+- 각 프로젝트 루트의 AGENTS.md (cwd 기반 탐색)
+
+출력: /tmp/existing_context.json
+"""
+import json, os
+from pathlib import Path
+
+CLAUDE_DIR = Path.home() / ".claude"
+OUT = Path("/tmp/existing_context.json")
+
+result = {"skills": [], "agents_md": []}
+
+# ── 스킬 수집 ──
+skills_dir = CLAUDE_DIR / "skills"
+if skills_dir.is_dir():
+    for skill_dir in sorted(skills_dir.iterdir()):
+        skill_md = skill_dir / "SKILL.md"
+        if skill_md.is_file():
+            content = skill_md.read_text(errors="replace")
+            result["skills"].append({
+                "name": skill_dir.name,
+                "path": str(skill_md),
+                "content": content[:5000],
+            })
+
+# ── AGENTS.md 수집: 프로젝트 디렉토리에서 cwd 추출 후 해당 경로에서 탐색 ──
+seen_cwds = set()
+projects_dir = CLAUDE_DIR / "projects"
+if projects_dir.is_dir():
+    for proj_dir in projects_dir.iterdir():
+        if not proj_dir.is_dir():
+            continue
+        for jsonl in proj_dir.glob("*.jsonl"):
+            # 첫 user 메시지에서 cwd 추출
+            with open(jsonl, "r", errors="replace") as f:
+                for line in f:
+                    try:
+                        d = json.loads(line)
+                    except:
+                        continue
+                    if d.get("type") == "user" and d.get("cwd"):
+                        seen_cwds.add(d["cwd"])
+                        break
+            if len(seen_cwds) > 50:
+                break
+
+for cwd in sorted(seen_cwds):
+    p = Path(cwd)
+    # AGENTS.md를 cwd와 부모들에서 탐색
+    for check in [p, p.parent, p.parent.parent]:
+        agents_md = check / "AGENTS.md"
+        if agents_md.is_file():
+            content = agents_md.read_text(errors="replace")
+            result["agents_md"].append({
+                "project_root": str(check),
+                "path": str(agents_md),
+                "content": content[:5000],
+            })
+            break
+
+# 중복 제거
+seen_paths = set()
+deduped = []
+for a in result["agents_md"]:
+    if a["path"] not in seen_paths:
+        seen_paths.add(a["path"])
+        deduped.append(a)
+result["agents_md"] = deduped
+
+OUT.write_text(json.dumps(result, ensure_ascii=False, indent=1))
+print(f"수집 완료 → {OUT}")
+print(f"  스킬: {len(result['skills'])}개")
+for s in result["skills"]:
+    print(f"    /{s['name']}")
+print(f"  AGENTS.md: {len(result['agents_md'])}개")
+for a in result["agents_md"]:
+    print(f"    {a['path']}")
+```
+
+실행:
+
+```bash
+python3 /tmp/collect_existing.py
+```
+
+---
+
 ## Step 2: 데이터 읽기
 
-`/tmp/session_analysis.json`을 Read 도구로 읽으세요.
+`/tmp/session_analysis.json`과 `/tmp/existing_context.json`을 Read 도구로 읽으세요.
 파일이 너무 크면 (200KB+) 아래 축소 스크립트를 먼저 실행하세요:
 
 ```python
@@ -220,11 +317,17 @@ print("축소 완료:", round(len(json.dumps(data, ensure_ascii=False))/1024), "
 - 반복적으로 요청하는 워크플로우 (예: "테스트 돌리고 커밋해줘" 류)
 - 특정 도구 조합을 매번 수동으로 지시하는 경우
 
+**기존 스킬과 대조** (`/tmp/existing_context.json`의 `skills`):
+- 발견한 패턴이 이미 존재하는 스킬과 동일하거나 유사한 경우 → **새 스킬 제안 대신** 기존 스킬의 수정/보완을 제안
+- 기존 스킬이 커버하지 못하는 부분이 있다면 → 어떤 부분을 추가하면 좋을지 구체적으로 제안
+- 기존 스킬과 완전히 다른 새 패턴만 → 신규 스킬 제안
+
 각 패턴에 대해:
 1. 패턴 이름
 2. 발견 빈도 (N개 세션)
 3. 실제 메시지 발췌 (증거)
-4. 스킬로 만들면 어떤 형태가 될지 초안
+4. **기존 스킬과의 관계**: `신규` / `기존 /스킬명 보완` / `기존 /스킬명과 중복 (스킵)`
+5. 스킬 초안 또는 기존 스킬 수정 diff
 
 ### 분석 B: 비효율적 탐색 패턴 → AGENTS.md 가이드라인
 
@@ -236,10 +339,16 @@ print("축소 완료:", round(len(json.dumps(data, ensure_ascii=False))/1024), "
 - 특정 프로젝트에서 항상 같은 엔트리포인트를 찾아 헤매는 패턴
 - 서브에이전트의 도구 사용 비율이 메인 세션과 크게 다른 경우 (비효율 신호)
 
+**기존 AGENTS.md와 대조** (`/tmp/existing_context.json`의 `agents_md`):
+- 이미 AGENTS.md가 있는 프로젝트 → 기존 내용과 비교하여 **누락된 가이드라인만** 추가 제안
+- 기존 가이드라인이 이미 문제를 커버하는 경우 → 해당 패턴은 스킵하거나, 가이드라인이 잘 안 먹히고 있는 이유를 분석
+- AGENTS.md가 없는 프로젝트 → 신규 생성 제안
+
 각 패턴에 대해:
 1. 어떤 비효율이 있는지
 2. 어떤 프로젝트/상황에서 발생하는지
-3. AGENTS.md에 넣으면 개선될 가이드라인 초안
+3. **기존 AGENTS.md와의 관계**: `신규 생성` / `기존 보완 (경로)` / `이미 커버됨 (스킵)`
+4. AGENTS.md에 넣을 가이드라인 초안 또는 기존 파일 수정 diff
 
 ---
 
@@ -247,8 +356,8 @@ print("축소 완료:", round(len(json.dumps(data, ensure_ascii=False))/1024), "
 
 분석 결과를 사용자에게 보여주고, 다음을 물어보세요:
 
-1. 제안된 스킬 중 실제로 만들고 싶은 것이 있는지
-2. AGENTS.md 가이드라인을 특정 프로젝트에 생성할지
+1. 제안된 스킬 중 실제로 만들고 싶은 것이 있는지 (신규 생성 or 기존 수정)
+2. AGENTS.md 가이드라인을 적용할지 (신규 생성 or 기존 보완)
 3. 분석 범위를 조정하고 싶은지 (더 많은 세션, 특정 프로젝트만 등)
 
 **주의사항:**
