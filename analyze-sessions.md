@@ -9,7 +9,7 @@
 ## Step 1: 세션 데이터 추출
 
 아래 Python 스크립트를 `/tmp/extract_sessions.py`에 저장하고 실행하세요.
-인자로 분석할 세션 수를 받습니다 (기본 10).
+인자: `python3 script.py [세션수] [기간(일)]` (기본: 상위 10개, 최근 7일)
 
 ```python
 #!/usr/bin/env python3
@@ -24,13 +24,17 @@ Claude Code 세션 데이터 추출기
 import sys, json, os
 from pathlib import Path
 
+import time
+
 NUM = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+DAYS = int(sys.argv[2]) if len(sys.argv) > 2 else 7
 CLAUDE_DIR = Path.home() / ".claude"
 OUT = Path("/tmp/session_analysis.json")
+CUTOFF = time.time() - DAYS * 86400
 
 
 def find_all_sessions():
-    """transcripts + projects 에서 메인 세션 JSONL 파일을 모두 찾아 크기순 정렬"""
+    """최근 N일 내 수정된 메인 세션 중 크기순 상위 NUM개"""
     files = []
     for d in [CLAUDE_DIR / "transcripts", CLAUDE_DIR / "projects"]:
         if not d.exists():
@@ -38,7 +42,8 @@ def find_all_sessions():
         for f in d.rglob("*.jsonl"):
             if "/subagents/" in str(f):
                 continue
-            files.append(f)
+            if f.stat().st_mtime >= CUTOFF:
+                files.append(f)
     files.sort(key=lambda f: f.stat().st_size, reverse=True)
     return files[:NUM]
 
@@ -166,7 +171,7 @@ for spath in sessions:
     })
 
 OUT.write_text(json.dumps(result, ensure_ascii=False, indent=1))
-print(f"추출 완료: {len(result)}개 세션 → {OUT}")
+print(f"추출 완료: {len(result)}개 세션 (최근 {DAYS}일, 상위 {NUM}개) → {OUT}")
 for s in result:
     sa = f", subagents={s['subagent_count']}" if s["subagent_count"] else ""
     print(f"  {s['session_id']}  {s['size_kb']}KB  msgs={s['user_message_count']}  tools={s['main_tool_calls']}{sa}  [{s['source'][:30]}]")
@@ -175,7 +180,8 @@ for s in result:
 실행:
 
 ```bash
-python3 /tmp/extract_sessions.py 10
+python3 /tmp/extract_sessions.py 10 7    # 최근 7일, 상위 10개
+python3 /tmp/extract_sessions.py 10 30   # 최근 30일, 상위 10개
 ```
 
 ---
