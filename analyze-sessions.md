@@ -58,25 +58,30 @@ Deduplicate: Track B individual findings that match Track A cross-session patter
 
 ## Step 2.5: Root-cause analysis for existing rules that failed
 
-**This is the most important step.** Before proposing any new rules, check every finding against existing skills, AGENTS.md, and memory files (`/tmp/existing_context.json`).
+**This is the most important step.** After merging Track A + Track B, identify every finding that already has a corresponding rule in existing skills, AGENTS.md, or memory files.
 
-For each finding that already has a corresponding rule:
+For each such finding, spawn a **Sonnet subagent in background** to investigate why the rule failed. Give each subagent:
+- The exact existing rule (quoted from `/tmp/existing_context.json`)
+- The session IDs where it was violated
+- The individual session files (`/tmp/session_N.json`) to examine
 
-1. **Find the exact existing rule** — quote it
-2. **Find the session moments where it was violated** — what was Claude doing right before the violation? Was it a subagent (which might not inherit the rule)? Was context already very long (compaction may have dropped the rule)? Was the rule vague enough to be interpreted differently?
-3. **Diagnose why it failed** — common causes:
-   - Rule is in memory/feedback but not in AGENTS.md (subagents don't see it)
-   - Rule is vague ("use docker" vs "run exactly `docker compose -f compose.yaml -f compose.local.yaml up -d`")
-   - Rule conflicts with another rule or default behavior
-   - Rule is buried in a long AGENTS.md and gets compacted away
-   - Subagent was spawned without the rule in its prompt
-4. **Propose a fix that addresses the root cause**, not just "add it again":
-   - If subagents don't see it → inject into subagent prompts, or add a hook
-   - If too vague → rewrite with exact commands/paths
-   - If buried → move to top of AGENTS.md, or split into a dedicated section
-   - If fundamentally unenforceable by prompt → suggest a hook (`settings.json`) that blocks the action mechanically
+Each subagent reads the relevant sessions and returns:
 
-**Do NOT propose adding a rule that already exists in the same form. That is useless.**
+```
+RULE: <quote the existing rule>
+VIOLATED IN: <session IDs>
+CAUSE: <one of: subagent-no-inherit | too-vague | buried-in-long-file | conflicts-with-X | compaction-dropped | other: ...>
+EVIDENCE: <what Claude was doing right before the violation — be specific>
+FIX: <proposed fix addressing the root cause>
+```
+
+Launch all root-cause subagents at once (background, `model: "sonnet"`), then wait for all to complete before proceeding to Step 3.
+
+**Key principle: Do NOT propose adding a rule that already exists in the same form. That is useless.** Fixes must address the root cause:
+- Subagents don't see it → inject into subagent prompts, or add a hook
+- Too vague → rewrite with exact commands/paths
+- Buried → move to top of AGENTS.md, or split into a dedicated section
+- Unenforceable by prompt → suggest a hook (`settings.json`) that blocks the action mechanically
 
 ---
 
